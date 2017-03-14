@@ -15,16 +15,16 @@ import lasagne.updates as LU
 import logging
 
 
-
 def L2_dist_squared(x, y):
     xsq = T.sqr(x).sum(axis=1).reshape((x.shape[0], 1))
-    ysq = T.sqr(y).sum(axis=1).reshape((1,y.shape[0]))
+    ysq = T.sqr(y).sum(axis=1).reshape((1, y.shape[0]))
     return xsq + ysq - 2.0 * T.dot(x, y.T) + 1E-06
 
 
 class GCNNLayer(LL.MergeLayer):
     """
     """
+
     def __init__(self, incomings, nfilters, nrings=5, nrays=16,
                  W=LI.GlorotNormal(), b=LI.Constant(0.0),
                  normalize_rings=False, normalize_input=False,
@@ -41,7 +41,7 @@ class GCNNLayer(LL.MergeLayer):
 
         self.W = self.add_param(W, self.filter_shape, name="W")
 
-        biases_shape = (nfilters, )
+        biases_shape = (nfilters,)
         self.b = self.add_param(b, biases_shape, name="b", regularizable=False)
 
     def get_output_shape_for(self, input_shapes):
@@ -75,8 +75,9 @@ class GCNNLayer(LL.MergeLayer):
 
         # output is N x outmaps x 1 x nrays if filter size is the same as
         # input image size prior padding
-        y = theano.tensor.nnet.conv.conv2d(desc_net, self.W, 
-            (self.input_shapes[0][0], self.filter_shape[1], self.nrings, self.nrays * 2 - 1), self.filter_shape)
+        y = theano.tensor.nnet.conv.conv2d(desc_net, self.W,
+                                           (self.input_shapes[0][0], self.filter_shape[1], self.nrings,
+                                            self.nrays * 2 - 1), self.filter_shape)
 
         if self.take_max:
             # take the max activation along all rotations of the disk
@@ -106,6 +107,37 @@ class COVLayer(LL.Layer):
         return x
 
 
+class FMAPLayer(LL.MergeLayer):
+    def __init__(self, incomings, ref_lbo, neigen, nonlinearity=None, **kwargs):
+        super(FMAPLayer, self).__init__(incomings, **kwargs)
+        self.ref_lbo = ref_lbo
+        self.neigen = neigen
+        self.nonlinearity = nonlinearity
+
+    def get_output_shape_for(self, input_shapes):
+        return (input_shapes[0][0], input_shapes[0][1])
+
+    def get_output_for(self, inputs, **kwargs):
+        x, f = inputs  # x - inputs, f - basis
+        # x.shape = Nxl, f.shape = Nxn
+
+        # compute F - the input coefficients matrix
+        F = T.transpose(desc_coeff(x, f[:, 0: self.neigen]))
+        # compute G - the reference coefficients matrix
+        G = T.transpose(desc_coeff(x, self.ref_lbo[:, 0: self.neigen]))
+        # compute C using least-squares: argmin_X( ||X*F - G||^2 )
+        C = ldiv(F, G)
+        # apply mapping F*C
+        Gr = T.dot(F, C)
+        # compute mapped functions g
+        g = T.dot(f[:, 0: self.neigen], T.transpose(Gr))
+
+        if self.nonlinearity:
+            g = self.nonlinearity(g)
+
+        return g
+
+
 def log_softmax(x):
     xdev = x - x.max(1, keepdims=True)
     return xdev - T.log(T.sum(T.exp(xdev), axis=1, keepdims=True))
@@ -115,3 +147,30 @@ def categorical_crossentropy_logdomain(log_predictions, targets, nclasses):
     # return -T.sum(theano.tensor.extra_ops.to_one_hot(targets, nclasses) * log_predictions, axis=1)
     # http://deeplearning.net/tutorial/logreg.html#logreg
     return - log_predictions[T.arange(targets.shape[0]), targets]
+
+
+def desc_coeff(desc, basis):
+    return ldiv(basis, desc)
+
+
+def ldiv(A, B):
+    '''
+    :return: pinv(A) * B
+    '''
+    At = T.transpose(A)
+    AtA = T.dot(At, A)
+    AtAi = T.inv(AtA)
+    AtB = T.dot(At, B)
+    return T.dot(AtAi, AtB)
+
+#
+# if __name__ == "__main__":
+#     x = np.ones(shape=(50, 6890, 64))
+#     x, f = inputs  # x - inputs, f - basis  # compute F - the input coefficients matrix
+#     F = desc_coeff(x, f[:100])
+#     # compute G - the reference coefficients matrix
+#     G = desc_coeff(x, self.ref_lbo[:100])
+#     # compute C using least-squares (argmin||XF-G||^2)
+#     C = ldiv(F, G)
+#     # return mapped input C*F
+#     return T.dot(C, F)
