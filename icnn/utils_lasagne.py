@@ -107,12 +107,22 @@ class COVLayer(LL.Layer):
         return x
 
 
+class Unit(LI.Initializer):
+    def __init__(self):
+        pass
+
+    def sample(self, shape):
+        return T.eye(shape[0], shape[1])
+
+
 class FMAPLayer(LL.MergeLayer):
-    def __init__(self, incomings, ref_lbo, neigen, nonlinearity=None, **kwargs):
+    def __init__(self, incomings, neigen,
+                 C=Unit(), nonlinearity=None,
+                 **kwargs):
         super(FMAPLayer, self).__init__(incomings, **kwargs)
-        self.ref_lbo = ref_lbo
         self.neigen = neigen
         self.nonlinearity = nonlinearity
+        self.C = self.add_param(C, (neigen, neigen), name="C")
 
     def get_output_shape_for(self, input_shapes):
         return (input_shapes[0][0], input_shapes[0][1])
@@ -123,19 +133,19 @@ class FMAPLayer(LL.MergeLayer):
 
         # compute F - the input coefficients matrix
         F = T.transpose(desc_coeff(x, f[:, 0: self.neigen]))
-        # compute G - the reference coefficients matrix
-        G = T.transpose(desc_coeff(x, self.ref_lbo[:, 0: self.neigen]))
-        # compute C using least-squares: argmin_X( ||X*F - G||^2 )
-        C = ldiv(F, G)
         # apply mapping F*C
-        Gr = T.dot(F, C)
+        G = T.dot(F, self.C)
         # compute mapped functions g
-        g = T.dot(f[:, 0: self.neigen], T.transpose(Gr))
+        g = T.dot(f[:, 0: self.neigen], T.transpose(G))
 
         if self.nonlinearity:
             g = self.nonlinearity(g)
 
         return g
+
+
+def diag_penalty(x):
+    return T.sum(T.mean(T.abs_(x), axis=1, keepdims=False) / (T.abs_(T.diag(x)) + .05))
 
 
 def log_softmax(x):
@@ -159,7 +169,7 @@ def ldiv(A, B):
     '''
     At = T.transpose(A)
     AtA = T.dot(At, A)
-    AtAi = T.inv(AtA)
+    AtAi = T.nlinalg.matrix_inverse(AtA)
     AtB = T.dot(At, B)
     return T.dot(AtAi, AtB)
 
