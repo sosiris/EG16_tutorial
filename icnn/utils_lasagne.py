@@ -116,10 +116,47 @@ class Unit(LI.Initializer):
 
 
 class FMAPLayer(LL.MergeLayer):
+    def __init__(self, incomings, ref_lbo, neigen, nonlinearity=None, **kwargs):
+        super(FMAPLayer, self).__init__(incomings, **kwargs)
+        self.phi_n = T.constant(ref_lbo, 'ref')
+        self.neigen = neigen
+        self.nonlinearity = nonlinearity
+
+    def get_output_shape_for(self, input_shapes):
+        return (input_shapes[0][0], input_shapes[0][1])
+
+    def get_output_for(self, inputs, **kwargs):
+        f, phi_m = inputs  # f - inputs, phi_m - basis
+
+        # compute A - the input coefficients matrix
+        A = desc_coeff(f, phi_m[:, 0: self.neigen])
+
+        # compute B - the reference coefficients matrix
+        B = desc_coeff(f, self.phi_n[:, 0: self.neigen])
+
+        # compute C using least-squares: argmin_X( ||X*A - B||^2 )
+        self.C = T.transpose(ldiv(T.transpose(A), T.transpose(B)))
+
+        # apply mapping A*C
+        Br = T.dot(self.C, A)
+
+        # compute smoothed mapped functions g
+        gr = T.dot(self.phi_n[:, 0: self.neigen], Br)
+
+        if self.nonlinearity:
+            gr = self.nonlinearity(gr)
+
+        return gr
+
+    def get_fmap(self):
+        return self.C
+
+
+class FMAPLayer_(LL.MergeLayer):
     def __init__(self, incomings, neigen,
                  C=Unit(), nonlinearity=None,
                  **kwargs):
-        super(FMAPLayer, self).__init__(incomings, **kwargs)
+        super(FMAPLayer_, self).__init__(incomings, **kwargs)
         self.neigen = neigen
         self.nonlinearity = nonlinearity
         self.C = self.add_param(C, (neigen, neigen), name="C")
@@ -128,12 +165,12 @@ class FMAPLayer(LL.MergeLayer):
         return (input_shapes[0][0], input_shapes[0][1])
 
     def get_output_for(self, inputs, **kwargs):
-        x, f = inputs  # x - inputs, f - basis
-        # x.shape = Nxl, f.shape = Nxn
+        x, f = inputs  # f - inputs, phi_m - basis
+        # f.shape = Nxl, phi_m.shape = Nxn
 
-        # compute F - the input coefficients matrix
+        # compute A - the input coefficients matrix
         F = T.transpose(desc_coeff(x, f[:, 0: self.neigen]))
-        # apply mapping F*C
+        # apply mapping A*C
         G = T.dot(F, self.C)
         # compute mapped functions g
         g = T.dot(f[:, 0: self.neigen], T.transpose(G))
@@ -163,24 +200,12 @@ def desc_coeff(desc, basis):
     return ldiv(basis, desc)
 
 
-def ldiv(A, B):
+def ldiv(a, b):
     '''
-    :return: pinv(A) * B
+    :return: pinv(a) * b  <=> (a \ b)
     '''
-    At = T.transpose(A)
-    AtA = T.dot(At, A)
-    AtAi = T.nlinalg.matrix_inverse(AtA)
-    AtB = T.dot(At, B)
-    return T.dot(AtAi, AtB)
-
-#
-# if __name__ == "__main__":
-#     x = np.ones(shape=(50, 6890, 64))
-#     x, f = inputs  # x - inputs, f - basis  # compute F - the input coefficients matrix
-#     F = desc_coeff(x, f[:100])
-#     # compute G - the reference coefficients matrix
-#     G = desc_coeff(x, self.ref_lbo[:100])
-#     # compute C using least-squares (argmin||XF-G||^2)
-#     C = ldiv(F, G)
-#     # return mapped input C*F
-#     return T.dot(C, F)
+    at = T.transpose(a)
+    at_a = T.dot(at, a)
+    at_ai = T.nlinalg.matrix_inverse(at_a)
+    at_b = T.dot(at, b)
+    return T.dot(at_ai, at_b)
